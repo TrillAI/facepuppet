@@ -1,0 +1,21 @@
+{
+  "name": "facepuppet",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Webcam-driven 2.5D photo face puppet. Single app page: puppet.html.",
+  "scripts": {
+    "dev": "node tools/build.mjs && node tools/serve.mjs",
+    "build:puppet": "node tools/build.mjs",
+    "check": "for f in src/*.js src/puppet/*.js tools/*.mjs; do node --check \"$f\" || exit 1; done && node tools/build.mjs --check",
+    "check:puppet": "node tools/build.mjs --check",
+    "test": "node tools/build.mjs --check && node tools/verify.mjs && node tools/harness.mjs",
+    "verify:puppet": "node tools/verify.mjs",
+    "harness:puppet": "node tools/build.mjs && node tools/harness.mjs",
+    "serve:puppet": "node tools/serve.mjs",
+    "serve": "node tools/serve.mjs"
+  },
+  "dependencies": {
+    "delaunator": "^5.0.1"
+  }
+}
