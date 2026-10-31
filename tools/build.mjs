@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 /* =====================================================================
    FaceMirror · main puppet build
-   Inlines src/math.js and src/puppet/*.js into puppet.html — the single
-   app page. index.html is written as a tiny redirect stub so any bare
-   visit lands on the puppet. No bundler: the output is readable and
-   view-source-able; serve it over HTTP(S) for webcam and module access.
+   Inlines src/math.js and src/puppet/*.js into puppet.html — the
+   advanced Canvas-2D demo page. index.html is NOT generated: it is the
+   standalone single-file Three.js app (validated by check-index.mjs).
+   No bundler: the output is readable and view-source-able; serve it
+   over HTTP(S) for webcam and module access.
 
    usage:  node tools/build.mjs [--check]
    ===================================================================== */
@@ -23,16 +24,9 @@ const SCRIPTS = [
   'src/puppet/render.js',
   'src/puppet/ui.js'
 ];
-/* puppet.html IS the app. index.html only exists as a redirect stub so a
-   bare domain hit lands on the puppet (the 3D studio is not shipped).   */
-const REDIRECT = `<!doctype html>
-<meta charset="utf-8">
-<title>Face Puppet</title>
-<meta http-equiv="refresh" content="0; url=puppet.html">
-<link rel="canonical" href="puppet.html">
-<p>Redirecting to <a href="puppet.html">puppet.html</a>…
-`;
-const OUTPUTS = { 'index.html': 'index', 'puppet.html': 'puppet' };
+/* puppet.html is generated from src/. index.html is hand-maintained as the
+   dependency-free single-file build and must never be overwritten here. */
+const OUTPUTS = { 'puppet.html': 'puppet' };
 
 async function inlineOne(rel) {
   const code = await readFile(join(rootDir, rel), 'utf8');
@@ -40,15 +34,15 @@ async function inlineOne(rel) {
   return `<script data-src="${rel}">\n${code}\n</script>\n`;
 }
 
-/* Render the main puppet page in memory — the single source of truth for
-   both generated entry points, so a stale page can never pass current. */
+/* Render the puppet page in memory — the single source of truth for the
+   generated entry point, so a stale page can never pass current. */
 export async function render() {
   const src = await readFile(join(rootDir, 'src/puppet/puppet.src.html'), 'utf8');
   const blobs = [];
   for (const rel of SCRIPTS) blobs.push(await inlineOne(rel));
   const page = src.replace(/<!--@include[^>]*-->/g, () => blobs.shift());
   if (page.includes('@include')) throw new Error('not every @include marker was replaced');
-  return { index: REDIRECT, puppet: page };
+  return { puppet: page };
 }
 
 export async function build() {
@@ -57,7 +51,7 @@ export async function build() {
   return { bytes: Buffer.byteLength(pages.puppet), files: SCRIPTS.length, outputs: Object.keys(OUTPUTS) };
 }
 
-/* --check: are both committed entry points byte-identical to the source? */
+/* --check: is the committed puppet.html byte-identical to the source? */
 export async function stale() {
   const pages = await render();
   const staleFiles = [];
@@ -75,7 +69,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       console.error(`check: STALE — ${bad.join(', ')} does not match src/. Run \`npm run build:puppet\`.`);
       process.exit(1);
     }
-    console.log('check: index.html and puppet.html match src/puppet/puppet.src.html exactly');
+    console.log('check: puppet.html matches src/puppet/puppet.src.html exactly');
   } else {
     const r = await build();
     console.log(`built ${r.outputs.join(" + ")} (puppet.html ${(r.bytes / 1024).toFixed(1)} kB, ${r.files} modules inlined)`);

@@ -1,9 +1,11 @@
 # Third-party notices
 
-The repository vendors the runtime dependencies used by both the default
-2.5D puppet and FaceMirror-3D Studio. Core face tracking can therefore start
-without relying on a live CDN; the puppet's optional shoulder/body tracker is
-loaded separately and may be unavailable without stopping face animation.
+The repository vendors the runtime dependencies used by the `puppet.html`
+demo, so its core face tracking can start without relying on a live CDN.
+The standalone single-file app (`index.html`) instead loads the same pinned
+versions — three.js 0.186.1, Tasks Vision 1.1.0, the float16/1 face model —
+from CDN at runtime (see below), with Delaunator 5.1.0 inlined, so the file
+has no local dependencies.
 
 ## three.js (0.186.1) — MIT License
 

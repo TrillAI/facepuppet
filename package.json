@@ -3,13 +3,15 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "Webcam-driven 2.5D photo face puppet. Single app page: puppet.html.",
+  "description": "Webcam-driven 2.5D photo face puppet. Standalone single-file app: index.html. Advanced Canvas-2D demo: puppet.html.",
   "scripts": {
     "dev": "node tools/build.mjs && node tools/serve.mjs",
     "build:puppet": "node tools/build.mjs",
-    "check": "for f in src/*.js src/puppet/*.js tools/*.mjs; do node --check \"$f\" || exit 1; done && node tools/build.mjs --check",
+    "check": "for f in src/*.js src/puppet/*.js tools/*.mjs; do node --check \"$f\" || exit 1; done && node tools/build.mjs --check && node tools/check-index.mjs",
     "check:puppet": "node tools/build.mjs --check",
-    "test": "node tools/build.mjs --check && node tools/verify.mjs && node tools/harness.mjs",
+    "check:index": "node tools/check-index.mjs",
+    "test": "node tools/build.mjs --check && node tools/check-index.mjs && node tools/verify.mjs && node tools/harness.mjs && node tools/harness-index.mjs",
+    "harness:index": "node tools/harness-index.mjs",
     "verify:puppet": "node tools/verify.mjs",
     "harness:puppet": "node tools/build.mjs && node tools/harness.mjs",
     "serve:puppet": "node tools/serve.mjs",
@@ -17,5 +19,8 @@
   },
   "dependencies": {
     "delaunator": "^5.0.1"
+  },
+  "devDependencies": {
+    "three": "^0.186.1"
   }
 }
