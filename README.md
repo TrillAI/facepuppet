@@ -90,6 +90,11 @@ microphone only.
 - `PuppetChrome` — forwards `getUserMedia` permission prompts and `<input
   type=file>` image picking from the page to the Android app.
 
+`tools/make-icons.mjs` draws the launcher icon — legacy 48–192 px, round,
+adaptive foreground/background and the API 33 themed layer — and writes it into
+`android/res`; the PNGs are committed, so an APK build never needs the canvas
+dependency (`npm i --no-save @napi-rs/canvas && node tools/make-icons.mjs`).
+
 The shell is hand-written smali (no Android SDK or Gradle is available in this
 repository's build sandbox), so `npm run lint:smali` is the safety net: it
 checks register ranges, invoke arity, `move-result` placement, branch labels and
