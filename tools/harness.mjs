@@ -454,6 +454,41 @@ ok('tongue feature is removed from UI, actions and presets',
    'no controls, tongue actions, preset, state, or render pass');
 ok('oral cavity and teeth diagnostics stay finite', [openDbg.mouth.h, openDbg.mouth.upperAlpha,
   openDbg.mouth.lowerAlpha, ses.jaw].every(Number.isFinite));
+/* the mandible sign: a positive jaw angle must swing the chin DOWN and BACK.
+   Getting the hinge direction backwards still passes a "jaw rotates" check
+   while the mouth only appears to open because the lip-collision pass pushes
+   the lips apart — which is what produced the stretched-chin artifact.   */
+const jawProbe = (angle) => {
+  const pts = head.P.map(p => p.slice());
+  FMEngine.applyJaw(head, pts, angle, FMEngine.tmjAxis(head));
+  return pts;
+};
+const chin0 = jawProbe(0)[152], chinA = jawProbe(0.30)[152];
+ok('positive jaw angle drops and retracts the chin',
+   chinA[1] - chin0[1] > head.fh * 0.02 && chinA[2] - chin0[2] < 0,
+   `chin dy ${(chinA[1] - chin0[1]).toFixed(1)} px, dz ${(chinA[2] - chin0[2]).toFixed(1)} px @0.30 rad`);
+/* dental arches: the lower one is bolted to that same bone, the upper one
+   hangs off the maxilla and must barely move when the jaw opens.        */
+const archAt = (jawOpen) => {
+  const st2 = Object.assign({}, teethSt, { jawOpen, t: teethSt.t + 1 });
+  let d2 = null;
+  for (let i = 0; i < 40; i++) { st2.t += 1 / 60; d2 = FMRender.sessionFrame(ses, st2); }
+  return d2.mouth;
+};
+const midArch = archAt(0.45), openArch = archAt(1.0);
+/* A hinge rotation about a near-horizontal axis barely changes the SCREEN y
+   of the incisal edge (that point sits almost straight under the axis, so it
+   swings backwards rather than down) — the depth channel is where the bone
+   motion shows up.  The upper arch has no place() at all, so its depth must
+   stay put while the lower one travels with the jaw.                   */
+const upDz = Math.abs(openArch.upperRawZ - midArch.upperRawZ);
+const loDz = Math.abs(openArch.lowerRawZ - midArch.lowerRawZ);
+const swing = (openArch.archJaw - midArch.archJaw) * deg;
+ok('lower dental arch rides the jaw bone, upper arch stays on the maxilla',
+   Number.isFinite(loDz) && Number.isFinite(upDz) && loDz > 4 && loDz > upDz * 4,
+   `incisal-edge depth travel over a ${swing.toFixed(1)}° swing: lower ${loDz.toFixed(1)} px, upper ${upDz.toFixed(2)} px`);
+ok('both arches draw a full dental set', openArch.upperTeeth >= 8 && openArch.lowerTeeth >= 8,
+   `upper ${openArch.upperTeeth}, lower ${openArch.lowerTeeth} crowns`);
 T.preset('Neutral');
 
 section('interaction');

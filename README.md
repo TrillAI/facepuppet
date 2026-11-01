@@ -27,8 +27,10 @@ needs `http://` or `https://` (not `file://`).
 - **Realistic head turns** — weighted Kabsch pose fit, one-euro filtering,
   quaternion slew, skull-pivot perspective, far-side compression and
   ear swing; anatomical soft limits keep neck and collar pinned.
-- **Teeth that read as teeth** — rigid upper/lower arches hinged on the
-  mandible, per-tooth enamel gradients, gum band, occlusion shadow and
+- **Teeth that read as teeth** — sixteen HD crowns per arch: the upper set is
+  anchored to the maxilla (it sits behind the upper lip and barely moves when
+  the jaw drops), the lower set is bolted to the hinged mandible and swings with
+  it. Per-tooth enamel gradients, papilla gum band, occlusion shadow and
   interproximal contacts, clipped to the inner-lip aperture.
 - **Better ears** — tragion-band weights recess the pinnae behind the cheek
   plane, with concha/helix shading and far-ear fade as the head turns.
@@ -53,3 +55,42 @@ current (`npm run check` fails otherwise).
 
 MediaPipe runtime, WASM and the face model are vendored under `vendor/`;
 a pinned CDN is used only as a fallback when an asset is missing.
+
+## Android app
+
+`release/FacePuppet.apk` is the same page wrapped in a WebView shell, and it is
+self-contained: `puppet.html`, the MediaPipe model (`face_landmarker.task`), both
+WASM runtimes (SIMD and fallback) and the demo portrait are packaged inside, so
+the app works with the network switched off — it does not even request
+`android.permission.INTERNET`.
+
+```bash
+npm run apk            # build + sign -> release/FacePuppet.apk
+npm run lint:smali     # static check of the hand-written smali shell
+```
+
+`tools/build-apk.mjs` locates a JDK, downloads `apktool.jar`/`apksigner.jar`
+once into `.apk-tools/`, regenerates `puppet.html`, stages `android/assets/`,
+compiles `android/smali/`, signs with `android/facepuppet.keystore` (v2 + v3)
+and prints a verification summary. Everything under `android/` except the shell
+sources is generated and git-ignored; the signing key (`android/facepuppet.keystore`,
+all passwords `facepuppet`) is created on first build — keep it, because Android
+only accepts an update that is signed with the same key.
+
+Side-load it with `adb install -r release/FacePuppet.apk`, or copy the file to
+the phone and open it (allow "install unknown apps" once). Package
+`ai.arena.facepuppet`, minSdk 24 (Android 7.0), targetSdk 33, portrait, camera +
+microphone only.
+
+- `MainActivity` — hosts the `WebView`, hides the system bars, asks for camera
+  and microphone up front and releases the camera when the app is backgrounded.
+- `AssetClient` — serves `assets/**` over
+  `https://appassets.androidplatform.net/` so the page runs in a secure context
+  (`getUserMedia` needs one; `file:///android_asset/` is not).
+- `PuppetChrome` — forwards `getUserMedia` permission prompts and `<input
+  type=file>` image picking from the page to the Android app.
+
+The shell is hand-written smali (no Android SDK or Gradle is available in this
+repository's build sandbox), so `npm run lint:smali` is the safety net: it
+checks register ranges, invoke arity, `move-result` placement, branch labels and
+own-class member references, and fails the build on any error.

@@ -5,3 +5,11 @@ dist/
 
 __pycache__/
 *.py[cod]
+
+# Android/APK build products
+.apk-tools/
+android/assets/
+android/build/
+android/facepuppet.keystore
+release/
+.preview/
