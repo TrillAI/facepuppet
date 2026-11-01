@@ -639,11 +639,20 @@
   }
   function tmjAxis(head) {
     /* hinge roughly 6% of face width above the mouth, passing through the
-       ear canal line — the classic TMJ approximation                     */
+       ear canal line — the classic TMJ approximation.
+
+       The axis DIRECTION carries the sign of the opening rotation: with a
+       positive jaw angle the mandible must swing *down and back* (chin
+       away from the maxilla, condyle turning in the fossa), i.e. y grows
+       and z shrinks.  Screens use y-down, so rotating about -x does that;
+       the vector is therefore built from 454 -> 234.  Getting this sign
+       wrong closes the bite while the jaw "opens" and the aperture can
+       only be faked by the lip-collision pass, which is exactly the
+       stretched-chin artifact this axis is here to avoid.               */
     const a = head.P[234], b = head.P[454];
     const y = (head.P[13][1] + head.P[14][1]) / 2 - head.fh * 0.10;
     const zc = (head.P[234][2] + head.P[454][2]) / 2 - head.fw * 0.18;
-    return { p: [(a[0] + b[0]) / 2, y, zc], dir: v3.norm([b[0] - a[0], (b[1] - a[1]) * 0.35, (b[2] - a[2]) * 0.9]) };
+    return { p: [(a[0] + b[0]) / 2, y, zc], dir: v3.norm([a[0] - b[0], (a[1] - b[1]) * 0.35, (a[2] - b[2]) * 0.9]) };
   }
   /* Smooth mandible field.  A bone weight that is binary across the jaw
      boundary shears the (tiny) tessellation edges that straddle it the

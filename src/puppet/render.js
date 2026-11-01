@@ -302,6 +302,9 @@
     const want = clamp01(Math.max(gapNow / (head.fh * 0.17), expressionOpen)) * 0.40;
     S.jaw = FM.slew(S.jaw, want, st.dt || 1 / 60, 3.2, 3.6);
     const jawAng = S.jaw * jawGain;
+    /* the signed, gain-applied angle every bone-driven pass shares (teeth,
+       drag solve, diagnostics): positive = mouth opening. */
+    S.jawAng = jawAng;
     /* one shared mandible rotation, applied with the *smoothed* bone
        weights so the skin over the jaw boundary stretches instead of
        tearing; the hair-shell points hang off the same weights         */
@@ -949,39 +952,32 @@
   }
 
   /* ------------------------------------------------------- oral cavity */
-  /* Dental arch spec: six teeth per side (central incisor -> first molar).
-     Widths are fractions of the mouth width and follow natural dentition
-     proportions; the arch is a circular arc of radius R (mouth widths), so
-     back teeth recede and turn away exactly like a real dental arch.    */
+  /* Dental arch spec: eight teeth per quadrant (central incisor to third
+     molar) in natural dentition proportions.  The arch is a circular arc
+     of radius R (in mouth widths), so the molars recede and turn away the
+     way a real dental arch does instead of sitting flat in the lip plane.
+     Only the front six or so can ever clear the lip aperture — the rest
+     exist so the arch reads as a curve and the sides never look pasted. */
   function buildArches() {
     return {
+      /* w: crown width (mouth widths), h: crown height relative to a
+         central incisor, k: outline family (incisal-edge profile)        */
       TEETH: [
-        { w: 0.150, h: 1.00 },               // central incisor
-        { w: 0.112, h: 0.86 },               // lateral incisor
-        { w: 0.126, h: 0.96 },               // canine
-        { w: 0.108, h: 0.80 },               // first premolar
-        { w: 0.100, h: 0.76 },               // second premolar
-        { w: 0.118, h: 0.70 }                // first molar
+        { w: 0.150, h: 1.00, k: 'inc' },     // central incisor
+        { w: 0.106, h: 0.84, k: 'inc' },     // lateral incisor
+        { w: 0.118, h: 0.97, k: 'can' },     // canine
+        { w: 0.100, h: 0.83, k: 'pm' },      // first premolar
+        { w: 0.096, h: 0.78, k: 'pm' },      // second premolar
+        { w: 0.126, h: 0.72, k: 'mol' },     // first molar
+        { w: 0.114, h: 0.68, k: 'mol2' },    // second molar
+        { w: 0.100, h: 0.62, k: 'mol2' }     // third molar
       ],
       R: 0.52,                               // arch radius, mouth widths
-      BACK: 0.14                             // arch depth behind the lips
+      BACK: 0.135                            // arch depth behind the lips
     };
   }
   const lerp2 = (p, q, t) => [p[0] + (q[0] - p[0]) * t, p[1] + (q[1] - p[1]) * t];
-  /* rounded polygon: corners cut with per-corner fractions of the edges */
-  function roundedPoly(ctx, pts, radii) {
-    const n = pts.length;
-    const exit = lerp2(pts[0], pts[1], radii[0]);
-    ctx.moveTo(exit[0], exit[1]);
-    for (let i = 1; i <= n; i++) {
-      const p = pts[i % n], prev = pts[(i - 1) % n], next = pts[(i + 1) % n];
-      const r = radii[i % n];
-      const entry = lerp2(p, prev, r), exitP = lerp2(p, next, r);
-      ctx.lineTo(entry[0], entry[1]);
-      ctx.quadraticCurveTo(p[0], p[1], exitP[0], exitP[1]);
-    }
-    ctx.closePath();
-  }
+  const mixP = (p, q, t) => ({ x: p.x + (q.x - p.x) * t, y: p.y + (q.y - p.y) * t });
   const shade = (c, k) => `rgb(${Math.round(clamp(c[0] * k, 0, 255))},${Math.round(clamp(c[1] * k, 0, 255))},${Math.round(clamp(c[2] * k, 0, 255))})`;
   function mouthFrame(head, C) {
     const a = C[61], b = C[291], up = C[13], lo = C[14];
@@ -1002,175 +998,313 @@
     fr.org[1] + fr.ax[1] * u + fr.ay[1] * v + fr.az[1] * w,
     fr.org[2] + fr.ax[2] * u + fr.ay[2] * v + fr.az[2] * w
   ];
+
+  /* ---- crown outline -------------------------------------------------
+     A tooth is the projected gum0-gum1-bite1-bite0 quad, but a real crown
+     is not a rounded rectangle: the proximal walls bow out at the contact
+     points, the four corners are rounded, the cervical margin arcs toward
+     the crown, and the incisal edge carries its family profile (gentle
+     arc on incisors, a cusp on canines, an occlusal notch on molars).
+     The outline is generated here in screen space from those four
+     projected corners, so it stays correct through any head pose.      */
+  const EDGE_PROFILE = { inc: 0.10, lat: 0.14, can: 0.34, pm: -0.07, mol: -0.12, mol2: -0.16 };
+  function toothPath(ctx, G0, G1, B1, B0, kind) {
+    const gm = mixP(G0, G1, 0.5), bm = mixP(B0, B1, 0.5);
+    const c0 = mixP(G0, G1, 0.13), c1 = mixP(G1, G0, 0.13);
+    const p1 = mixP(c1, B1, 0.15), p2 = mixP(B1, G1, 0.13);
+    const p3 = mixP(B1, B0, 0.17), p4 = mixP(B0, B1, 0.17);
+    const p5 = mixP(B0, G0, 0.13), p6 = mixP(G0, B0, 0.15);
+    const cerv = mixP(gm, bm, 0.13);                       // CEJ arcs toward the crown
+    const prof = EDGE_PROFILE[kind] === undefined ? 0.10 : EDGE_PROFILE[kind];
+    const edge = mixP(bm, gm, -prof);                      // negative t = past the edge
+    ctx.beginPath();
+    ctx.moveTo(c0.x, c0.y);
+    ctx.quadraticCurveTo(cerv.x, cerv.y, c1.x, c1.y);
+    ctx.quadraticCurveTo(G1.x, G1.y, p1.x, p1.y);
+    ctx.lineTo(p2.x, p2.y);
+    ctx.quadraticCurveTo(B1.x, B1.y, p3.x, p3.y);
+    ctx.quadraticCurveTo(edge.x, edge.y, p4.x, p4.y);
+    ctx.quadraticCurveTo(B0.x, B0.y, p5.x, p5.y);
+    ctx.lineTo(p6.x, p6.y);
+    ctx.quadraticCurveTo(G0.x, G0.y, c0.x, c0.y);
+    ctx.closePath();
+  }
+
+  /* ---- gingiva -------------------------------------------------------
+     Drawn behind the crowns: a scalloped margin with a papilla between
+     each pair of teeth, a darker sulcus hugging the margin and a band
+     that fades toward the lip.  It hangs off the same cervical points as
+     the crowns, so the teeth can never drift out of their gums.        */
+  function drawGum(ctx, list, isUp, alpha, mw, lum) {
+    if (!list.length) return;
+    const n = list.length;
+    const away = list.map(t => {
+      const dx = t.gm.x - t.bm.x, dy = t.gm.y - t.bm.y;
+      const l = Math.hypot(dx, dy) || 1;
+      return [dx / l, dy / l];
+    });
+    const band = Math.max(2.5, mw * 0.095);
+    const margin = [];
+    for (let i = 0; i < n; i++) {
+      margin.push([list[i].gm.x, list[i].gm.y]);
+      if (i < n - 1) {
+        const a = list[i], b = list[i + 1];
+        if ((a.um < 0) !== (b.um < 0)) continue;           // never bridge the midline gap
+        const mx = (a.gm.x + b.gm.x) / 2, my = (a.gm.y + b.gm.y) / 2;
+        const hh = Math.min(a.hh, b.hh) * 0.42;
+        margin.push([mx - (away[i][0] + away[i + 1][0]) * 0.5 * hh,
+                     my - (away[i][1] + away[i + 1][1]) * 0.5 * hh]);
+      }
+    }
+    if (margin.length < 2) return;
+    const base = margin.map((m, i) => {
+      const k = Math.min(away.length - 1, Math.round(i / 2));
+      return [m[0] + away[k][0] * band, m[1] + away[k][1] * band];
+    });
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.beginPath();
+    ctx.moveTo(base[0][0], base[0][1]);
+    for (let i = 1; i < base.length; i++) ctx.lineTo(base[i][0], base[i][1]);
+    for (let i = margin.length - 1; i >= 0; i--) ctx.lineTo(margin[i][0], margin[i][1]);
+    ctx.closePath();
+    const m0 = base[Math.floor(base.length / 2)], m1 = margin[Math.floor(margin.length / 2)];
+    const g = ctx.createLinearGradient(m0[0], m0[1], m1[0], m1[1]);
+    g.addColorStop(0, shade([150 + lum * 24, 74 + lum * 18, 78 + lum * 16], 1));
+    g.addColorStop(0.58, shade([196 + lum * 24, 112 + lum * 22, 108 + lum * 18], 1));
+    g.addColorStop(1, shade([218 + lum * 22, 138 + lum * 20, 130 + lum * 18], 1));
+    ctx.fillStyle = g;
+    ctx.fill();
+    /* sulcus: a soft shadow just under the margin (the pocket line) */
+    const sg = ctx.createLinearGradient(m0[0], m0[1], m1[0], m1[1]);
+    sg.addColorStop(0.62, 'rgba(58,16,20,0)');
+    sg.addColorStop(1, 'rgba(58,16,20,.42)');
+    ctx.fillStyle = sg;
+    ctx.fill();
+    ctx.restore();
+  }
+
   /* Draw one rigid dental arch, clipped to the mouth opening, and return
-     visibility diagnostics.  Teeth are lit by their angle to the view axis
-     (so a head turn shades the arch like a curve, not a flat sticker),
-     graded cervix->incisal like real enamel, and separated by soft
-     interproximal contacts.  The upper arch hangs from the maxilla; the
-     lower arch rides the mandible, so both follow the jaw bone.         */
+     visibility diagnostics.
+
+       · the UPPER arch is bolted to the maxilla: its occlusal (bite) plane
+         sits at the REST lip line, its crowns hang behind the upper lip and
+         nothing about it is read from the moving lip skin, so a smile or a
+         head turn can never drag it around;
+       · the LOWER arch is bolted to the mandible: its points are rotated
+         about the same TMJ axis, with the same angle, as the jaw-weighted
+         skin in deform(), so the lower crowns travel with the bone and the
+         bite opens exactly as wide as the chin drops;
+       · both arches are clipped to the (dilated) inner-lip polygon, so
+         enamel can never paint over vermilion or skin.
+
+     Teeth are lit by their angle to the view axis (a head turn shades the
+     arch like a curve, not a flat sticker), graded cervix->incisal like
+     real enamel, and separated by soft interproximal contacts.         */
   function drawArch(S, ctx, proj3, fr, which, cfg, clipPoly) {
     const A = S.arches;
     const isUp = which === 'up';
     const part = clamp01(cfg.part === undefined ? 1 : cfg.part);
-    /* lips parting reveals the upper arch first; the lower arch stays
-       behind the lower lip until the mouth is properly open            */
-    const vis = clamp01(cfg.vis) * (isUp ? clamp01(part * 1.7) : clamp01((part - 0.55) / 0.45));
+    const vis = clamp01(cfg.vis) * (isUp ? clamp01(part * 2.6) : clamp01((part - 0.12) / 0.88));
     if (vis <= 0.012) return { frontY: null, drawnTeeth: 0, alphaSum: 0 };
+    if (!clipPoly || clipPoly.length < 3) return { frontY: null, drawnTeeth: 0, alphaSum: 0 };
+
+    let cx0 = 1e9, cy0 = 1e9, cx1 = -1e9, cy1 = -1e9;
+    for (const q of clipPoly) {
+      if (q.x < cx0) cx0 = q.x; if (q.x > cx1) cx1 = q.x;
+      if (q.y < cy0) cy0 = q.y; if (q.y > cy1) cy1 = q.y;
+    }
+    if (!(cx1 - cx0 > 2 && cy1 - cy0 > 2)) return { frontY: null, drawnTeeth: 0, alphaSum: 0 };
+
     const yaw = cfg.yaw || 0;
+    const jaw = cfg.jaw || 0;
     const mw = fr.mw;
-    const crown = mw * (isUp ? 0.26 : 0.23);
-    /* the incisal edges sit inside the opening: the upper arch shows about
-       six tenths of the gap, the lower arch about a third (it rises from
-       behind the lower lip) — never a sliver, never past the lips       */
-    const openV = Math.max(0, fr.loY - fr.upY);
-    /* incisal edge stays inside the lip aperture: the 62%/22% bite rules
-       can overshoot a wide-open jaw, and teeth past the vermilion read as
-       a denture even though the clip polygon hides the overshoot          */
-    const bite = isUp ? Math.min(fr.upY + clamp(openV * 0.62, 0, crown * 0.85), fr.loY - openV * 0.02)
-                      : Math.max(fr.loY - clamp(openV * 0.22, 0, crown * 0.55), fr.upY + openV * 0.02);
+    const crown = mw * (isUp ? 0.255 : 0.215);
+    /* Occlusal plane = the rest lip line.  The maxilla does not move when
+       the jaw drops, so the upper incisal edges are anchored there; a
+       small opening-driven reveal keeps the classic "teeth come out from
+       behind the lip" read without ever letting them float.             */
+    const lipLine = (fr.upY + fr.loY) / 2;
+    const reveal = clamp((cfg.open || 0) * mw * 0.24, 0, crown * 0.34);
+    const vBite = isUp ? lipLine + mw * 0.014 + reveal : lipLine - mw * 0.022;
+    /* the mandible rotation the skin got this frame (deform writes it) */
+    const jawR = !isUp && Math.abs(jaw) > 1e-4 && S.axis ? FM.m3.fromAxisAngle(S.axis.dir, jaw) : null;
+    const place = (p) => {
+      if (!jawR) return p;
+      const rel = [p[0] - S.axis.p[0], p[1] - S.axis.p[1], p[2] - S.axis.p[2]];
+      const r = FM.m3.mv(jawR, rel);
+      return [S.axis.p[0] + r[0], S.axis.p[1] + r[1], S.axis.p[2] + r[2]];
+    };
     const teeth = [];
     for (let sd = 0; sd < 2; sd++) {
       let cum = 0;
+      const sgn = sd ? 1 : -1;
       for (let j = 0; j < A.TEETH.length; j++) {
         const spec = A.TEETH[j];
-        const w = spec.w * (isUp ? 1 : 0.95);
-        const sgn = sd ? 1 : -1;
-        /* the arch is an arc: lateral position is R*sin(theta), so the
-           side teeth wrap backwards instead of spanning the mouth as a
-           flat keyboard                                                    */
-        const th0 = cum / A.R, th1 = (cum + w) / A.R;
-        const u0 = (A.R * Math.sin(th0) + 0.002) * sgn, u1 = (A.R * Math.sin(th1) - 0.002) * sgn;
-        const thm = (th0 + th1) / 2;
-        const um = (A.R * Math.sin(thm)) * sgn;
-        cum += w;
-        const th = thm;                               // arch angle of this tooth
-        const back = A.BACK + A.R * (1 - Math.cos(th)) + j * 0.012;
-        const hh = crown * spec.h * (1 + (((j * 13 + (sd ? 5 : 0)) % 7) - 3) * 0.012);
-        const vBite = bite, vGum = bite + (isUp ? -hh : hh);
+        const wj = spec.w * (isUp ? 1 : 0.94);
+        const th0 = cum / A.R, th1 = (cum + wj) / A.R;
+        const u0 = (A.R * Math.sin(th0) + 0.002) * sgn;
+        const u1 = (A.R * Math.sin(th1) - 0.002) * sgn;
+        const th = (th0 + th1) / 2;
+        const um = A.R * Math.sin(th) * sgn;
+        cum += wj;
+        const back = A.BACK + A.R * (1 - Math.cos(th)) + j * 0.010;
+        const hh = crown * spec.h * (1 + (((j * 13 + (sd ? 5 : 0)) % 7) - 3) * 0.011);
+        const vGum = vBite + (isUp ? -hh : hh);
         const q = [
-          proj3(mfp(fr, u0 * mw, vGum, -mw * back)),
-          proj3(mfp(fr, u1 * mw, vGum, -mw * back)),
-          proj3(mfp(fr, u1 * mw, vBite, -mw * (back - 0.03))),
-          proj3(mfp(fr, u0 * mw, vBite, -mw * (back - 0.03)))
-        ];
-        if (!q.every(v => isFinite(v[0]) && isFinite(v[1]))) continue;
-        teeth.push({ q, j, sd, th, back, hh });
+          place(mfp(fr, u0 * mw, vGum, -mw * back)),
+          place(mfp(fr, u1 * mw, vGum, -mw * back)),
+          place(mfp(fr, u1 * mw, vBite, -mw * (back - 0.030))),
+          place(mfp(fr, u0 * mw, vBite, -mw * (back - 0.030)))
+        ].map(proj3).map(v => ({ x: v[0], y: v[1], z: v[2] }));
+        if (!q.every(v => isFinite(v.x) && isFinite(v.y))) continue;
+        const G0 = q[0], G1 = q[1], B1 = q[2], B0 = q[3];
+        const x0 = Math.min(G0.x, G1.x, B0.x, B1.x), x1 = Math.max(G0.x, G1.x, B0.x, B1.x);
+        const y0 = Math.min(G0.y, G1.y, B0.y, B1.y), y1 = Math.max(G0.y, G1.y, B0.y, B1.y);
+        if (x1 < cx0 - 2 || x0 > cx1 + 2 || y1 < cy0 - 2 || y0 > cy1 + 2) continue;
+        teeth.push({ G0, G1, B1, B0, j, sd, th, back, hh, kind: spec.k,
+                     gm: mixP(G0, G1, 0.5), bm: mixP(B0, B1, 0.5), um,
+                     box: [x0, y0, x1, y1] });
       }
     }
-    teeth.sort((a, b) => b.back - a.back);            // molars first, centrals last
-    const bright = clamp01((0.62 + S.cache.lum * 0.5) * cfg.bright);
+    if (!teeth.length) return { frontY: null, drawnTeeth: 0, alphaSum: 0 };
+    teeth.sort((a, b) => b.back - a.back);                 // molars first, centrals last
+    const lum = clamp01(S.cache.lum);
+    const bright = clamp01((0.55 + lum * 0.45) * (cfg.bright === undefined ? 1 : cfg.bright));
     const warm = clamp01(cfg.warmth);
-    /* enamel palette tuned by the photo's own skin luminance/warmth */
-    const cerv = [214 - warm * 10, 190 - warm * 14, 158 - warm * 20];
-    const body = [246, 242, 231];
-    const incis = [228, 234, 236];
-    let frontY = null, drawnTeeth = 0, alphaSum = 0;
+    /* Enamel palette from the photo's own skin luminance/warmth: never pure
+       white (that reads as paper), always a warm ivory body with a cooler,
+       more translucent incisal third.  Values stay under 250 so the head
+       turn highlight has somewhere to go.                              */
+    const cerv = [201 - warm * 10, 180 - warm * 12, 143 - warm * 16];
+    const body = [236 - warm * 4, 229 - warm * 6, 210 - warm * 10];
+    const incis = [239, 239, 232];
+    const trans = [216, 227, 238];                         // incisal halo (bluish)
+    let frontY = null, frontZ = null, drawnTeeth = 0, alphaSum = 0;
     ctx.save();
-    if (clipPoly && clipPoly.length > 2) {
-      ctx.beginPath();
-      clipPoly.forEach((pt, i) => i ? ctx.lineTo(pt.x, pt.y) : ctx.moveTo(pt.x, pt.y));
-      ctx.closePath();
-      ctx.clip();
-    }
-    /* gum band behind the upper crowns (scalloped, sits under the lip) */
-    if (isUp) {
-      const gumPts = [];
-      for (const t of teeth) {
-        if (t.j > 3) continue;
-        gumPts.push([lerp2(t.q[0], t.q[1], 0.5)[0], lerp2(t.q[0], t.q[1], 0.5)[1]]);
-      }
-      if (gumPts.length > 2) {
-        ctx.save();
-        ctx.globalAlpha = vis * 0.85;
-        ctx.beginPath();
-        ctx.moveTo(gumPts[0][0], gumPts[0][1]);
-        for (const g of gumPts) ctx.lineTo(g[0], g[1] - mw * 0.015);
-        for (let i = gumPts.length - 1; i >= 0; i--) ctx.lineTo(gumPts[i][0], gumPts[i][1] - mw * 0.10);
-        ctx.closePath();
-        ctx.fillStyle = shade([168 + S.cache.lum * 30, 96 + S.cache.lum * 20, 96 + S.cache.lum * 18], 1);
-        ctx.fill();
-        ctx.restore();
-      }
-    }
+    ctx.beginPath();
+    clipPoly.forEach((pt, i) => i ? ctx.lineTo(pt.x, pt.y) : ctx.moveTo(pt.x, pt.y));
+    ctx.closePath();
+    ctx.clip();
+
+    /* gum first (behind the crowns), in arch order so the papillae land
+       between neighbouring teeth */
+    const gumOrder = teeth.slice().sort((a, b) => a.um - b.um);
+    drawGum(ctx, gumOrder, isUp, vis * 0.92, mw, lum);
+
     for (const t of teeth) {
-      const alpha = clamp01(vis * (1 - Math.min(0.55, t.back * 0.55)));
+      const { G0, G1, B1, B0, gm, bm, hh } = t;
+      const alpha = clamp01(vis * (1 - Math.min(0.55, Math.max(0, t.back - A.BACK) * 0.55)));
       if (alpha <= 0.02) continue;
       alphaSum += alpha;
-      const [G0, G1, B1, B0] = t.q;                   // gum0 gum1 bite1 bite0
       /* a tooth angled away from the view axis catches less light */
-      const light = clamp(0.42 + 0.58 * Math.cos(t.th - yaw * 0.85), 0.20, 1) * (0.72 + bright * 0.42);
-      const path = (rad) => {
-        ctx.beginPath();
-        roundedPoly(ctx, [G0, G1, B1, B0], rad || [0.14, 0.14, isUp ? 0.30 : 0.18, isUp ? 0.30 : 0.18]);
-      };
+      const light = clamp(0.44 + 0.56 * Math.cos(t.th - yaw * 0.85), 0.22, 1) * (0.74 + bright * 0.26) * (isUp ? 1 : 0.90);
+      const tint = 1 + (((t.j * 29 + (t.sd ? 7 : 0)) % 5) - 2) * 0.006;   // per-tooth hue jitter
       ctx.save();
       ctx.globalAlpha = alpha;
+      const path = () => toothPath(ctx, G0, G1, B1, B0, t.kind);
+      /* ---- enamel body: cervix (warm, opaque) -> incisal (cool, clear) */
       path();
-      const grad = ctx.createLinearGradient(
-        (G0[0] + G1[0]) / 2, (G0[1] + G1[1]) / 2, (B0[0] + B1[0]) / 2, (B0[1] + B1[1]) / 2);
-      grad.addColorStop(0, shade(cerv, light * 0.92));
-      grad.addColorStop(0.34, shade(body, light));
-      grad.addColorStop(0.78, shade(body, light * 1.02));
-      grad.addColorStop(1, shade(incis, light * 0.98));
-      ctx.fillStyle = grad;
+      const g = ctx.createLinearGradient(gm.x, gm.y, bm.x, bm.y);
+      g.addColorStop(0, shade(cerv, light * 0.90 * tint));
+      g.addColorStop(0.30, shade(body, light * 0.99 * tint));
+      g.addColorStop(0.72, shade(body, light * 1.02 * tint));
+      g.addColorStop(1, shade(incis, light * 1.0));
+      ctx.fillStyle = g;
       ctx.fill();
-      if (warm > 0.01) { ctx.fillStyle = `rgba(198,152,74,${warm * 0.20})`; ctx.fill(); }
-      /* buccal curvature: darken both proximal thirds */
+      ctx.save();
       path();
-      const side = ctx.createLinearGradient(G0[0], G0[1], G1[0], G1[1]);
-      side.addColorStop(0, 'rgba(96,72,52,.22)');
-      side.addColorStop(0.30, 'rgba(96,72,52,0)');
-      side.addColorStop(0.70, 'rgba(96,72,52,0)');
-      side.addColorStop(1, 'rgba(96,72,52,.22)');
+      ctx.clip();
+      /* buccal curvature: both proximal walls fall away from the light */
+      const side = ctx.createLinearGradient(G0.x, G0.y, G1.x, G1.y);
+      side.addColorStop(0, `rgba(92,64,44,${0.26 * light})`);
+      side.addColorStop(0.26, 'rgba(92,64,44,0)');
+      side.addColorStop(0.74, 'rgba(92,64,44,0)');
+      side.addColorStop(1, `rgba(92,64,44,${0.26 * light})`);
       ctx.fillStyle = side;
       ctx.fill();
-      /* shadow cast by the opposing arch / lip onto the incisal third */
-      path();
-      const occ = ctx.createLinearGradient((B0[0] + B1[0]) / 2, (B0[1] + B1[1]) / 2,
-                                           (G0[0] + G1[0]) / 2, (G0[1] + G1[1]) / 2);
-      const occA = isUp ? 0.16 : 0.42;
-      occ.addColorStop(0, `rgba(46,20,18,${occA})`);
-      occ.addColorStop(isUp ? 0.30 : 0.45, 'rgba(46,20,18,0)');
-      occ.addColorStop(1, 'rgba(46,20,18,0)');
+      /* cervical third: the neck of the tooth sits in the gingival sulcus */
+      const cervG = ctx.createLinearGradient(gm.x, gm.y, bm.x, bm.y);
+      cervG.addColorStop(0, `rgba(96,52,32,${0.34 * light})`);
+      cervG.addColorStop(0.26, 'rgba(96,52,32,0)');
+      ctx.fillStyle = cervG;
+      ctx.fill();
+      /* incisal translucency: the enamel thins to a clear halo at the edge */
+      const halo = ctx.createLinearGradient(bm.x, bm.y, gm.x, gm.y);
+      halo.addColorStop(0, `rgba(${trans[0]},${trans[1]},${trans[2]},${(isUp ? 0.20 : 0.13) * light})`);
+      halo.addColorStop(0.12, `rgba(${trans[0]},${trans[1]},${trans[2]},${0.07 * light})`);
+      halo.addColorStop(0.30, 'rgba(255,255,255,0)');
+      ctx.fillStyle = halo;
+      ctx.fill();
+      /* occlusal shadow cast by the opposing arch (grows as the bite closes) */
+      const occ = ctx.createLinearGradient(bm.x, bm.y, gm.x, gm.y);
+      const occA = isUp ? 0.09 : 0.20;
+      occ.addColorStop(0, `rgba(46,22,18,${occA * light})`);
+      occ.addColorStop(isUp ? 0.24 : 0.34, 'rgba(46,22,18,0)');
       ctx.fillStyle = occ;
       ctx.fill();
-      /* specular streak on the buccal face of the front teeth */
-      if (t.j < 3) {
-        const c = lerp2(lerp2(G0, G1, 0.5), lerp2(B0, B1, 0.5), 0.42);
-        const rw = Math.hypot(G1[0] - G0[0], G1[1] - G0[1]) * 0.30;
-        const rh = Math.hypot(B0[0] - G0[0], B0[1] - G0[1]) * 0.34;
-        if (rw > 0.4 && rh > 0.4) {
-          ctx.save();
-          ctx.translate(c[0], c[1]);
-          ctx.scale(1, rh / rw);
-          const sg = ctx.createRadialGradient(0, 0, 0, 0, 0, rw);
-          sg.addColorStop(0, `rgba(255,255,252,${0.20 * bright * light})`);
-          sg.addColorStop(1, 'rgba(255,255,252,0)');
-          ctx.fillStyle = sg;
-          ctx.beginPath(); ctx.arc(0, 0, rw, 0, 7); ctx.fill();
-          ctx.restore();
+      /* specular: a soft vertical streak on the buccal face of the fronts */
+      if (t.j < 5) {
+        const wpx = Math.hypot(G1.x - G0.x, G1.y - G0.y);
+        const c = mixP(mixP(G0, G1, 0.5), mixP(B0, B1, 0.5), 0.38);
+        const r = Math.max(1.5, wpx * 0.34);
+        const rg = ctx.createRadialGradient(c.x, c.y, 0, c.x, c.y, r);
+        rg.addColorStop(0, `rgba(255,255,250,${0.18 * bright * light})`);
+        rg.addColorStop(1, 'rgba(255,255,250,0)');
+        ctx.fillStyle = rg;
+        ctx.fill();
+        /* mamelons: the three soft lobes young incisors carry near the edge */
+        if (t.kind === 'inc' && hh > mw * 0.06) {
+          ctx.strokeStyle = `rgba(255,253,246,${0.07 * light})`;
+          ctx.lineWidth = Math.max(0.5, mw * 0.006);
+          const dirX = (bm.x - gm.x) * 0.26, dirY = (bm.y - gm.y) * 0.26;
+          for (const off of [-0.20, 0.20]) {
+            const a = mixP(gm, bm, 0.62), b = mixP(gm, bm, 0.88);
+            const ox = (G1.x - G0.x) * off, oy = (G1.y - G0.y) * off;
+            ctx.beginPath();
+            ctx.moveTo(a.x + ox, a.y + oy);
+            ctx.lineTo(b.x + ox + dirX * 0.12, b.y + oy + dirY * 0.12);
+            ctx.stroke();
+          }
         }
       }
-      /* interproximal contacts */
-      ctx.strokeStyle = `rgba(74,42,34,${0.18 * alpha})`;
-      ctx.lineWidth = Math.max(0.6, mw * 0.007);
-      ctx.beginPath(); ctx.moveTo(G0[0], G0[1]); ctx.lineTo(B0[0], B0[1]); ctx.stroke();
-      ctx.beginPath(); ctx.moveTo(G1[0], G1[1]); ctx.lineTo(B1[0], B1[1]); ctx.stroke();
       ctx.restore();
-      const edgeY = (B0[1] + B1[1]) / 2;
-      if (frontY === null || (isUp ? edgeY > frontY : edgeY < frontY)) frontY = edgeY;
+      /* proximal contact: a hairline of shadow where the crowns touch */
+      ctx.strokeStyle = `rgba(70,40,30,${0.20 * alpha})`;
+      ctx.lineWidth = Math.max(0.6, mw * 0.0055);
+      ctx.beginPath(); ctx.moveTo(G0.x, G0.y); ctx.lineTo(B0.x, B0.y); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(G1.x, G1.y); ctx.lineTo(B1.x, B1.y); ctx.stroke();
+      ctx.restore();
+      const edgeY = (B0.y + B1.y) / 2;
+      if (frontY === null || (isUp ? edgeY > frontY : edgeY < frontY)) {
+        frontY = edgeY;
+        frontZ = (B0.z + B1.z) / 2;
+      }
       drawnTeeth++;
+    }
+    /* incisal contact shadow: the arch throws a soft shadow into the
+       cavity, which is what stops a row of crowns from reading as a
+       bright cardboard strip against black.  Painted last, inside the
+       aperture clip, so it only touches the gap below the teeth.      */
+    if (frontY !== null) {
+      const band = mw * (isUp ? 0.10 : 0.075);
+      const y0 = isUp ? frontY : frontY - band;
+      const g = ctx.createLinearGradient(0, isUp ? frontY : frontY, 0, isUp ? frontY + band : frontY - band);
+      g.addColorStop(0, `rgba(22,7,9,${(isUp ? 0.42 : 0.30) * vis})`);
+      g.addColorStop(1, 'rgba(22,7,9,0)');
+      ctx.fillStyle = g;
+      ctx.fillRect(cx0, y0, Math.max(1, cx1 - cx0), Math.max(1, band));
     }
     ctx.restore();
     /* the clip polygon is the real incisal boundary: report the VISIBLE
        edge, not the unclipped geometric one (a wide-open jaw shows a
        partial crown by design — the lips crop the rest)               */
-    if (clipPoly && frontY !== null) {
-      let cy0 = 1e9, cy1 = -1e9;
-      for (const q of clipPoly) { if (q.y < cy0) cy0 = q.y; if (q.y > cy1) cy1 = q.y; }
-      frontY = isUp ? Math.min(frontY, cy1) : Math.max(frontY, cy0);
-    }
-    return { frontY, drawnTeeth, alphaSum };
+    /* rawY keeps the unclipped geometric edge: the clamped one saturates
+       against the aperture, so it cannot tell "the arch moved" from "the
+       lips cropped more" (tests read rawY for bone motion).            */
+    const rawY = frontY, rawZ = frontZ;
+    if (frontY !== null) frontY = isUp ? Math.min(frontY, cy1) : Math.max(frontY, cy0);
+    return { frontY, rawY, rawZ, drawnTeeth, alphaSum, jaw: cfg.jaw || 0 };
   }
 
   function drawCavity(S, ctx, D, h) {
@@ -1196,6 +1330,34 @@
     rg.addColorStop(1, 'rgba(3,0,1,0)');
     ctx.fillStyle = rg;
     ctx.fillRect(bb.x0 - 2, bb.y0 - 2, bb.w + 4, bb.h + 4);
+    /* ---- tongue + floor of the mouth -------------------------------
+       A jaw drop does not reveal a black keyhole: behind the arches the
+       tongue catches a little of the same key light, and its mass sits low
+       in the aperture.  Two soft gradients are enough to make the cavity
+       read as depth instead of a hole, and they fade with the opening so
+       a nearly shut mouth stays dark.                                 */
+    const openV = Math.max(0, D[14].y - D[13].y);
+    if (openV > mw * 0.10) {
+      const tk = clamp01((openV - mw * 0.08) / (mw * 0.22)) * h;
+      const ty = my + openV * 0.30;
+      const tw = Math.max(3, mw * 0.30), thh = Math.max(2, mw * 0.12);
+      ctx.save();
+      ctx.translate(mx, ty);
+      ctx.scale(1, thh / tw);
+      const tg = ctx.createRadialGradient(0, 0, 0, 0, 0, tw);
+      tg.addColorStop(0, `rgba(148,72,70,${0.62 * tk})`);
+      tg.addColorStop(0.62, `rgba(116,50,52,${0.34 * tk})`);
+      tg.addColorStop(1, 'rgba(84,32,36,0)');
+      ctx.fillStyle = tg;
+      ctx.beginPath(); ctx.arc(0, 0, tw, 0, 7); ctx.fill();
+      ctx.restore();
+      /* palatal shadow: the roof of the mouth is the darkest surface */
+      const pal = ctx.createLinearGradient(mx, D[13].y, mx, my);
+      pal.addColorStop(0, `rgba(26,8,10,${0.55 * h})`);
+      pal.addColorStop(1, 'rgba(26,8,10,0)');
+      ctx.fillStyle = pal;
+      ctx.fillRect(bb.x0 - 2, bb.y0 - 2, bb.w + 4, bb.h + 4);
+    }
     ctx.restore();
     return true;
   }
@@ -1305,14 +1467,31 @@
     } else {
       ctx.drawImage(S.layer, 0, 0);
       /* ---- accessories -------------------------------------------- */
-      const fr = mouthFrame(S.head, C);
+      /* teeth hang off the REST skull, not off the deformed lip skin: the
+         maxilla does not move when the jaw drops, and the mandible arch is
+         rotated by the bone angle inside drawArch.  Using C here made the
+         arches chase the lips (they slid with every smile).             */
+      const fr = mouthFrame(S.head, S.head.P);
       mw = Math.hypot(S.DST[61 * 2] - S.DST[291 * 2], S.DST[61 * 2 + 1] - S.DST[291 * 2 + 1]) || S.head.fw * 0.4;
       const rawGap = Math.hypot(S.DST[13 * 2] - S.DST[14 * 2], S.DST[13 * 2 + 1] - S.DST[14 * 2 + 1]);
       gap = Math.max(0, rawGap - mw * 0.035);
       S.openEnv = envelope(S.openEnv, clamp01(gap / (mw * 0.30)), st.dt || 1 / 60, 14, 9);
       h = S.openEnv;
       const zc = st.depthGain || 0;
-      const proj3 = (p) => S.proj([p[0], p[1], p[2] * (1 + zc)]);
+      /* Accessories must live in the same space as the mesh.  The shell is
+         painted at S2 + (proj(cur) - proj0(base)) — an absolute proj() is
+         NOT the screen position (dolly scale and pivot live inside it), so
+         a dental arch placed with proj() alone lands tens of pixels off
+         the lips whenever the tracker dollies.  archMap reproduces the
+         shell's own displacement for a rest point, so teeth stay welded
+         to the face instead of floating in projection space.           */
+      const archMap = (p) => {
+        const pz = p[2] * (1 + zc);
+        const a = S.proj([p[0], p[1], pz]);
+        const b = S.proj0([p[0], p[1], pz]);
+        return [p[0] + (a[0] - b[0]), p[1] + (a[1] - b[1]), a[2]];
+      };
+      const proj3 = archMap;
       if (h > 0.004) oral.cavity = drawCavity(S, ctx, D, h) === true;
       /* teeth are clipped to the (slightly dilated) inner-lip polygon so
          they can never paint onto skin or over the vermilion           */
@@ -1331,14 +1510,18 @@
       }
       const part = clamp01((gap - mw * 0.02) / (mw * 0.16));
       const yawNow = E.eulerYaw(st.q);
-      const cfg = { vis: st.vis, bright: st.bright, warmth: st.warmth, part, yaw: yawNow };
+      const cfg = { vis: st.vis, bright: st.bright, warmth: st.warmth, part, yaw: yawNow,
+                    open: gap / Math.max(1, mw), jaw: S.jawAng || 0 };
       const lower = drawArch(S, ctx, proj3, fr, 'lo', cfg, clipPoly);
       oral.lowerTeeth = lower.drawnTeeth; oral.lowerAlpha = lower.alphaSum;
       const upper = drawArch(S, ctx, proj3, fr, 'up', cfg, clipPoly);
       oral.upperTeeth = upper.drawnTeeth; oral.upperAlpha = upper.alphaSum;
       oral.upperFrontY = upper.frontY; oral.lowerFrontY = lower.frontY;
+      oral.upperRawY = upper.rawY; oral.lowerRawY = lower.rawY;
+      oral.upperRawZ = upper.rawZ; oral.lowerRawZ = lower.rawZ;
+      oral.archJaw = lower.jaw;
       oral.clip = clipPoly ? 1 : 0; oral.part = part;
-      oral.orgY = proj3(fr.org)[1];
+      oral.orgY = archMap(fr.org)[1];
       if (clipPoly) {
         let iy0=1e9,iy1=-1e9,ix0=1e9,ix1=-1e9;
         for (const q of clipPoly){ if(q.y<iy0)iy0=q.y; if(q.y>iy1)iy1=q.y; if(q.x<ix0)ix0=q.x; if(q.x>ix1)ix1=q.x; }
